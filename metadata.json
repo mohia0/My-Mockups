@@ -1,0 +1,5 @@
+{
+  "name": "My Mockups",
+  "description": "A two-step tool to generate custom mockups. Describe your scene, generate a base image with a logo placement area, and then upload your logo to create the final mockup.",
+  "requestFramePermissions": []
+}
