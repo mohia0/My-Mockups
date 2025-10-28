@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { generateFinalMockup, rewriteDescription, generateImageBasedMockup, inpaintImage } from './services/geminiService';
 import { Header } from './components/Header';
@@ -122,6 +123,12 @@ const imageCounts = [1, 2, 4];
 
 type GenerationMode = 'description' | 'image';
 
+interface HistoryItem {
+    id: string;
+    images: string[];
+    isEdit: boolean;
+}
+
 interface ImageEditorModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -134,6 +141,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
     const lastPos = useRef<{ x: number, y: number } | null>(null);
     const isDrawing = useRef(false);
+    const [isMouseDown, setIsMouseDown] = useState(false);
     const [brushSize, setBrushSize] = useState(40);
     const [prompt, setPrompt] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -165,9 +173,10 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
         };
     }, [isOpen, imageSrc]);
 
-    const getCanvasPos = (canvas: HTMLCanvasElement, e: MouseEvent | TouchEvent) => {
+    // Fix: Use React's synthetic event types and a robust type guard for touch events.
+    const getCanvasPos = (canvas: HTMLCanvasElement, e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
         const rect = canvas.getBoundingClientRect();
-        const touch = e instanceof TouchEvent ? e.touches[0] : e;
+        const touch = 'touches' in e ? e.touches[0] : e;
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
         return {
@@ -176,7 +185,8 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
         };
     };
 
-    const draw = (e: MouseEvent | TouchEvent) => {
+    // Fix: Update event handler to use React's synthetic event types.
+    const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
         if (!isDrawing.current) return;
         const maskCanvas = maskCanvasRef.current;
         const ctx = maskCanvas?.getContext('2d');
@@ -192,7 +202,8 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
         lastPos.current = pos;
     };
 
-    const startDrawing = (e: MouseEvent | TouchEvent) => {
+    // Fix: Update event handler to use React's synthetic event types.
+    const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
         const maskCanvas = maskCanvasRef.current;
         const ctx = maskCanvas?.getContext('2d');
         if (!ctx) return;
@@ -202,6 +213,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
         if (maskHistory.current.length > 10) maskHistory.current.shift(); // Limit history
 
         isDrawing.current = true;
+        setIsMouseDown(true);
         ctx.lineWidth = brushSize;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -211,6 +223,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
 
     const stopDrawing = () => {
         isDrawing.current = false;
+        setIsMouseDown(false);
         lastPos.current = null;
     };
     
@@ -277,7 +290,7 @@ const ImageEditorModal: React.FC<ImageEditorModalProps> = ({ isOpen, onClose, im
                         <canvas ref={imageCanvasRef} className="absolute inset-0 w-full h-full object-contain" />
                         <canvas 
                             ref={maskCanvasRef} 
-                            className="absolute inset-0 w-full h-full object-contain cursor-crosshair"
+                            className={`absolute inset-0 w-full h-full object-contain ${isMouseDown ? 'cursor-grabbing' : 'cursor-crosshair'}`}
                             onMouseDown={startDrawing}
                             onMouseMove={draw}
                             onMouseUp={stopDrawing}
@@ -334,18 +347,19 @@ const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRewriting, setIsRewriting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentImages, setCurrentImages] = useState<string[]>([]);
-  const [history, setHistory] = useState<string[][]>([]);
+  const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [examples, setExamples] = useState<string[]>([]);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [modalImage, setModalImage] = useState<string | null>(null);
   const [generationMode, setGenerationMode] = useState<GenerationMode>('description');
   const [isEditingModalOpen, setIsEditingModalOpen] = useState<boolean>(false);
-  const [editingImage, setEditingImage] = useState<{url: string; index: number} | null>(null);
-
+  const [editingImage, setEditingImage] = useState<{url: string; historyId: string; index: number} | null>(null);
 
   const logoFileInputRef = useRef<HTMLInputElement>(null);
   const baseImageFileInputRef = useRef<HTMLInputElement>(null);
+  
+  const currentImages = history.find(h => h.id === currentHistoryId)?.images || [];
 
   const handleRefreshExamples = useCallback(() => {
     // @ts-ignore
@@ -407,7 +421,6 @@ const App: React.FC = () => {
     e.preventDefault();
     setIsGenerating(true);
     setError(null);
-    setCurrentImages([]);
     
     try {
         let results: string[] = [];
@@ -435,8 +448,9 @@ const App: React.FC = () => {
             results = await Promise.all(generationPromises);
         }
       
-      setCurrentImages(results);
-      setHistory(prev => [results, ...prev]);
+      const newHistoryItem: HistoryItem = { id: Date.now().toString(), images: results, isEdit: false };
+      setHistory(prev => [newHistoryItem, ...prev]);
+      setCurrentHistoryId(newHistoryItem.id);
 
     } catch (e) {
       console.error(e);
@@ -470,18 +484,20 @@ const App: React.FC = () => {
   const handleEditComplete = (newImageUrl: string) => {
       if (!editingImage) return;
 
-      const updatedImages = [...currentImages];
-      updatedImages[editingImage.index] = newImageUrl;
-      setCurrentImages(updatedImages);
+      const originalHistoryItem = history.find(h => h.id === editingImage.historyId);
+      if (!originalHistoryItem) return;
 
-      const currentHistoryIndex = history.findIndex(group => group.includes(editingImage.url));
-      if (currentHistoryIndex > -1) {
-          const updatedHistory = [...history];
-          const newGroup = [...updatedHistory[currentHistoryIndex]];
-          newGroup[editingImage.index] = newImageUrl;
-          updatedHistory[currentHistoryIndex] = newGroup;
-          setHistory(updatedHistory);
-      }
+      const newImages = [...originalHistoryItem.images];
+      newImages[editingImage.index] = newImageUrl;
+      
+      const newHistoryItem: HistoryItem = {
+          id: Date.now().toString(),
+          images: newImages,
+          isEdit: true
+      };
+
+      setHistory(prev => [newHistoryItem, ...prev]);
+      setCurrentHistoryId(newHistoryItem.id);
       
       setEditingImage(null);
       setIsEditingModalOpen(false);
@@ -710,7 +726,7 @@ const App: React.FC = () => {
                       <img src={img} alt={`Generated Mockup ${index + 1}`} className="max-w-full max-h-full object-contain rounded-lg animate-fade-in" />
                       <div className="absolute top-2 right-2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                         <button
-                          onClick={() => { setEditingImage({ url: img, index }); setIsEditingModalOpen(true); }}
+                          onClick={() => { setEditingImage({ url: img, historyId: currentHistoryId!, index }); setIsEditingModalOpen(true); }}
                           className="p-2 bg-black/50 backdrop-blur-sm hover:bg-black/70 text-white rounded-full shadow-sm"
                           title="Edit image"
                           aria-label="Edit image"
@@ -739,13 +755,16 @@ const App: React.FC = () => {
               <h3 className="text-xs text-center text-gray-500 font-medium mb-1 flex-shrink-0">History</h3>
               <div className="overflow-y-auto flex-grow flex flex-col gap-2">
                 {history.length > 0 ? (
-                  history.map((imageGroup, groupIndex) => (
-                      <button key={groupIndex} onClick={() => setCurrentImages(imageGroup)} className={`relative rounded-md overflow-hidden transition-all duration-200 block w-full aspect-square flex-shrink-0 group ${currentImages === imageGroup ? 'ring-2 ring-offset-2 ring-offset-black ring-white' : 'ring-1 ring-gray-700 hover:ring-gray-500'}`}>
-                          <img src={imageGroup[0]} alt={`History set ${groupIndex + 1}`} className="w-full h-full object-cover"/>
-                          {imageGroup.length > 1 && (
+                  history.map((item) => (
+                      <button key={item.id} onClick={() => setCurrentHistoryId(item.id)} className={`relative rounded-md overflow-hidden transition-all duration-200 block w-full aspect-square flex-shrink-0 group ${currentHistoryId === item.id ? 'ring-2 ring-offset-2 ring-offset-black ring-white' : 'ring-1 ring-gray-700 hover:ring-gray-500'}`}>
+                          <img src={item.images[0]} alt={`History set ${item.id}`} className="w-full h-full object-cover"/>
+                          {item.images.length > 1 && (
                             <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
-                                {imageGroup.length}
+                                {item.images.length}
                             </span>
+                          )}
+                           {item.isEdit && (
+                            <BrushIcon className="absolute top-1 right-1 w-3 h-3 text-white bg-black/50 p-0.5 rounded-sm" />
                           )}
                       </button>
                   ))
