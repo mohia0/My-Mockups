@@ -355,9 +355,12 @@ const App: React.FC = () => {
   const [generationMode, setGenerationMode] = useState<GenerationMode>('description');
   const [isEditingModalOpen, setIsEditingModalOpen] = useState<boolean>(false);
   const [editingImage, setEditingImage] = useState<{url: string; historyId: string; index: number} | null>(null);
+  const [activeUpload, setActiveUpload] = useState<'logo' | 'baseImage' | null>(null);
 
   const logoFileInputRef = useRef<HTMLInputElement>(null);
   const baseImageFileInputRef = useRef<HTMLInputElement>(null);
+  const logoUploadRef = useRef<HTMLButtonElement>(null);
+  const baseImageUploadRef = useRef<HTMLButtonElement>(null);
   
   const currentImages = history.find(h => h.id === currentHistoryId)?.images || [];
 
@@ -374,33 +377,55 @@ const App: React.FC = () => {
   
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
-      const items = event.clipboardData?.items;
-      if (!items) return;
+        if (!activeUpload) return;
 
-      const imageItem = Array.from(items).find(item => item.type.startsWith('image/'));
-      
-      if (imageItem) {
-          const file = imageItem.getAsFile();
-          if (file) {
-              event.preventDefault();
-              
-              const reader = new FileReader();
-              reader.onload = (e) => {
-                  const result = e.target?.result as string;
-                  setBaseImage(result);
-              };
-              reader.readAsDataURL(file);
-          }
-      }
+        const items = event.clipboardData?.items;
+        if (!items) return;
+
+        const imageItem = Array.from(items).find(item => item.type.startsWith('image/'));
+        
+        if (imageItem) {
+            const file = imageItem.getAsFile();
+            if (file) {
+                event.preventDefault();
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const result = e.target?.result as string;
+                    if (activeUpload === 'logo') {
+                        setLogoImage(result);
+                    } else if (activeUpload === 'baseImage') {
+                        setBaseImage(result);
+                    }
+                    setActiveUpload(null); // Deactivate after paste
+                };
+                reader.readAsDataURL(file);
+            }
+        }
     };
 
-    if (generationMode === 'image') {
-      window.addEventListener('paste', handlePaste);
-      return () => {
+    window.addEventListener('paste', handlePaste);
+    return () => {
         window.removeEventListener('paste', handlePaste);
-      };
-    }
-  }, [generationMode]);
+    };
+  }, [activeUpload]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        const target = event.target as Node;
+        
+        const isClickingLogoButton = logoUploadRef.current?.contains(target);
+        const isClickingBaseImageButton = baseImageUploadRef.current?.contains(target);
+        
+        if (!isClickingLogoButton && !isClickingBaseImageButton) {
+            setActiveUpload(null);
+        }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const handleRewrite = useCallback(async () => {
     if (!description.trim()) return;
@@ -503,6 +528,24 @@ const App: React.FC = () => {
       setIsEditingModalOpen(false);
   };
   
+  const handleLogoAreaClick = () => {
+      if (activeUpload === 'logo') {
+          logoFileInputRef.current?.click();
+          setActiveUpload(null);
+      } else {
+          setActiveUpload('logo');
+      }
+  };
+
+  const handleBaseImageAreaClick = () => {
+      if (activeUpload === 'baseImage') {
+          baseImageFileInputRef.current?.click();
+          setActiveUpload(null);
+      } else {
+          setActiveUpload('baseImage');
+      }
+  };
+  
   const isGenerateDisabled = isGenerating || !logoImage || (generationMode === 'description' ? !description.trim() : !baseImage);
 
   return (
@@ -595,8 +638,26 @@ const App: React.FC = () => {
                         <h2 className="text-lg font-semibold text-white">Upload Your Logo</h2>
                     </div>
                     <input type="file" ref={logoFileInputRef} onChange={(e) => handleFileChange(e, setLogoImage)} accept="image/*" className="hidden" />
-                    <button type="button" onClick={() => logoFileInputRef.current?.click()} className="w-full h-32 flex flex-col items-center justify-center border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-lg transition">
-                        {logoImage ? <img src={logoImage} alt="Logo preview" className="max-h-24 object-contain p-2" /> : (<><UploadIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload</span></>)}
+                    <button 
+                        ref={logoUploadRef}
+                        type="button" 
+                        onClick={handleLogoAreaClick} 
+                        className={`w-full h-32 flex flex-col items-center justify-center border-2 border-dashed rounded-lg transition text-center p-2 ${
+                            activeUpload === 'logo' 
+                            ? 'border-white ring-2 ring-white/50 bg-gray-700/50' 
+                            : 'border-gray-700 hover:border-gray-500'
+                        }`}
+                    >
+                        {logoImage ? <img src={logoImage} alt="Logo preview" className="max-h-24 object-contain p-2" /> : (
+                            activeUpload === 'logo' ? (
+                                <>
+                                    <div className="text-lg font-semibold text-white">Ready to Paste</div>
+                                    <span className="mt-1 text-sm text-gray-400 px-2">Ctrl+V or click again to browse</span>
+                                </>
+                            ) : (
+                                <><UploadIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload logo</span></>
+                            )
+                        )}
                     </button>
                     {logoImage && <p className='text-xs text-center mt-2 text-gray-400'>Click image to change logo.</p>}
                   </div>
@@ -638,8 +699,26 @@ const App: React.FC = () => {
                             <h2 className="text-lg font-semibold text-white">Upload Base Image</h2>
                         </div>
                         <input type="file" ref={baseImageFileInputRef} onChange={(e) => handleFileChange(e, setBaseImage)} accept="image/*" className="hidden" />
-                        <button type="button" onClick={() => baseImageFileInputRef.current?.click()} className="w-full h-40 flex flex-col items-center justify-center border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-lg transition">
-                            {baseImage ? <img src={baseImage} alt="Base image preview" className="max-h-32 object-contain p-2" /> : (<><ImageIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload or paste image</span></>)}
+                        <button 
+                            ref={baseImageUploadRef}
+                            type="button" 
+                            onClick={handleBaseImageAreaClick} 
+                            className={`w-full h-40 flex flex-col items-center justify-center border-2 border-dashed rounded-lg transition text-center p-2 ${
+                                activeUpload === 'baseImage' 
+                                ? 'border-white ring-2 ring-white/50 bg-gray-700/50' 
+                                : 'border-gray-700 hover:border-gray-500'
+                            }`}
+                        >
+                            {baseImage ? <img src={baseImage} alt="Base image preview" className="max-h-32 object-contain p-2" /> : (
+                                 activeUpload === 'baseImage' ? (
+                                    <>
+                                        <div className="text-lg font-semibold text-white">Ready to Paste</div>
+                                        <span className="mt-1 text-sm text-gray-400 px-2">Ctrl+V or click again to browse</span>
+                                    </>
+                                ) : (
+                                    <><ImageIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload or paste</span></>
+                                )
+                            )}
                         </button>
                         {baseImage && <p className='text-xs text-center mt-2 text-gray-400'>Click image to change base image.</p>}
                   </div>
@@ -649,8 +728,26 @@ const App: React.FC = () => {
                         <h2 className="text-lg font-semibold text-white">Upload Your Logo</h2>
                     </div>
                     <input type="file" ref={logoFileInputRef} onChange={(e) => handleFileChange(e, setLogoImage)} accept="image/*" className="hidden" />
-                    <button type="button" onClick={() => logoFileInputRef.current?.click()} className="w-full h-32 flex flex-col items-center justify-center border-2 border-dashed border-gray-700 hover:border-gray-500 rounded-lg transition">
-                        {logoImage ? <img src={logoImage} alt="Logo preview" className="max-h-24 object-contain p-2" /> : (<><UploadIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload logo</span></>)}
+                    <button 
+                        ref={logoUploadRef}
+                        type="button" 
+                        onClick={handleLogoAreaClick} 
+                        className={`w-full h-32 flex flex-col items-center justify-center border-2 border-dashed rounded-lg transition text-center p-2 ${
+                            activeUpload === 'logo' 
+                            ? 'border-white ring-2 ring-white/50 bg-gray-700/50' 
+                            : 'border-gray-700 hover:border-gray-500'
+                        }`}
+                    >
+                        {logoImage ? <img src={logoImage} alt="Logo preview" className="max-h-24 object-contain p-2" /> : (
+                            activeUpload === 'logo' ? (
+                                <>
+                                    <div className="text-lg font-semibold text-white">Ready to Paste</div>
+                                    <span className="mt-1 text-sm text-gray-400 px-2">Ctrl+V or click again to browse</span>
+                                </>
+                            ) : (
+                                <><UploadIcon className="w-8 h-8 text-gray-500" /><span className="mt-2 text-sm font-semibold text-gray-400">Click to upload logo</span></>
+                            )
+                        )}
                     </button>
                     {logoImage && <p className='text-xs text-center mt-2 text-gray-400'>Click image to change logo.</p>}
                   </div>
