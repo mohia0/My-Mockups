@@ -9,9 +9,60 @@ if (!apiKey) {
 
 const ai = new GoogleGenAI({ apiKey });
 
+// Helper function to compress images if they're too large
+function compressImageIfNeeded(dataUrl: string, maxWidth: number = 2048, maxHeight: number = 2048): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            
+            // Calculate new dimensions if image is too large
+            if (width > maxWidth || height > maxHeight) {
+                const ratio = Math.min(maxWidth / width, maxHeight / height);
+                width = width * ratio;
+                height = height * ratio;
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+                reject(new Error('Could not get canvas context'));
+                return;
+            }
+            
+            ctx.drawImage(img, 0, 0, width, height);
+            // Convert to JPEG to reduce size, quality 0.85
+            const compressed = canvas.toDataURL('image/jpeg', 0.85);
+            resolve(compressed);
+        };
+        
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = dataUrl;
+    });
+}
+
 function dataUrlToInlineData(dataUrl: string) {
-    const [header, data] = dataUrl.split(',');
-    const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
+    if (!dataUrl || typeof dataUrl !== 'string') {
+        throw new Error('Invalid data URL provided');
+    }
+    
+    const parts = dataUrl.split(',');
+    if (parts.length !== 2) {
+        throw new Error('Invalid data URL format');
+    }
+    
+    const [header, data] = parts;
+    const mimeTypeMatch = header.match(/:(.*?);/);
+    const mimeType = mimeTypeMatch?.[1] || 'image/png';
+    
+    if (!data || data.length === 0) {
+        throw new Error('Empty image data');
+    }
+    
     return { mimeType, data };
 }
 
@@ -70,7 +121,10 @@ export async function generateFinalMockup(description: string, logoBase64Url: st
     `;
 
     try {
-        const logoPart = { inlineData: dataUrlToInlineData(logoBase64Url) };
+        console.log("Compressing logo if needed...");
+        // Compress logo to avoid API limits
+        const compressedLogoImage = await compressImageIfNeeded(logoBase64Url);
+        const logoPart = { inlineData: dataUrlToInlineData(compressedLogoImage) };
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image',
@@ -85,6 +139,14 @@ export async function generateFinalMockup(description: string, logoBase64Url: st
             },
         });
         
+        if (!response.candidates || response.candidates.length === 0) {
+            throw new Error("No candidates returned from AI");
+        }
+        
+        if (!response.candidates[0]?.content?.parts) {
+            throw new Error("No content parts in response");
+        }
+        
         for (const part of response.candidates[0].content.parts) {
             if (part.inlineData) {
                 return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
@@ -94,7 +156,21 @@ export async function generateFinalMockup(description: string, logoBase64Url: st
 
     } catch (error) {
         console.error("Error calling Gemini API for final mockup generation:", error);
-        throw new Error("Failed to generate the final mockup. Please try a different prompt or logo.");
+        
+        // Provide more specific error messages
+        if (error instanceof Error) {
+            if (error.message.includes('API_KEY')) {
+                throw new Error("API key not configured. Please set GEMINI_API_KEY in your .env.local file.");
+            }
+            if (error.message.includes('quota') || error.message.includes('rate limit')) {
+                throw new Error("API quota exceeded. Please try again later.");
+            }
+            if (error.message.includes('Invalid')) {
+                throw new Error(error.message);
+            }
+        }
+        
+        throw new Error(`Failed to generate the final mockup: ${error instanceof Error ? error.message : 'Unknown error'}. Please try a different prompt or logo.`);
     }
 }
 
@@ -124,9 +200,21 @@ export async function generateImageBasedMockup(baseImageBase64Url: string, logoB
     `;
 
     try {
-        const baseImagePart = { inlineData: dataUrlToInlineData(baseImageBase64Url) };
-        const logoPart = { inlineData: dataUrlToInlineData(logoBase64Url) };
+        // Validate inputs
+        if (!baseImageBase64Url || !logoBase64Url) {
+            throw new Error("Base image and logo must be provided");
+        }
 
+        console.log("Compressing images if needed...");
+        // Compress images to avoid API limits
+        const compressedBaseImage = await compressImageIfNeeded(baseImageBase64Url);
+        const compressedLogoImage = await compressImageIfNeeded(logoBase64Url);
+
+        console.log("Converting data URLs to inline data...");
+        const baseImagePart = { inlineData: dataUrlToInlineData(compressedBaseImage) };
+        const logoPart = { inlineData: dataUrlToInlineData(compressedLogoImage) };
+
+        console.log("Calling Gemini API for image-based mockup generation...");
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image',
             contents: {
@@ -142,6 +230,16 @@ export async function generateImageBasedMockup(baseImageBase64Url: string, logoB
             },
         });
         
+        console.log("API call successful, processing response...");
+        
+        if (!response.candidates || response.candidates.length === 0) {
+            throw new Error("No candidates returned from AI");
+        }
+        
+        if (!response.candidates[0]?.content?.parts) {
+            throw new Error("No content parts in response");
+        }
+        
         for (const part of response.candidates[0].content.parts) {
             if (part.inlineData) {
                 return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
@@ -151,7 +249,21 @@ export async function generateImageBasedMockup(baseImageBase64Url: string, logoB
 
     } catch (error) {
         console.error("Error calling Gemini API for image-based mockup generation:", error);
-        throw new Error("Failed to generate the image-based mockup. Please try a different image or logo.");
+        
+        // Provide more specific error messages
+        if (error instanceof Error) {
+            if (error.message.includes('API_KEY')) {
+                throw new Error("API key not configured. Please set GEMINI_API_KEY in your .env.local file.");
+            }
+            if (error.message.includes('quota') || error.message.includes('rate limit')) {
+                throw new Error("API quota exceeded. Please try again later.");
+            }
+            if (error.message.includes('Invalid')) {
+                throw new Error(error.message);
+            }
+        }
+        
+        throw new Error(`Failed to generate the image-based mockup: ${error instanceof Error ? error.message : 'Unknown error'}. Please try a different image or logo.`);
     }
 }
 
@@ -171,7 +283,10 @@ export async function inpaintImage(imageWithTransparencyBase64Url: string, promp
     `;
 
     try {
-        const imagePart = { inlineData: dataUrlToInlineData(imageWithTransparencyBase64Url) };
+        console.log("Compressing image for inpainting if needed...");
+        // Compress image to avoid API limits
+        const compressedImage = await compressImageIfNeeded(imageWithTransparencyBase64Url);
+        const imagePart = { inlineData: dataUrlToInlineData(compressedImage) };
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image',
@@ -186,6 +301,14 @@ export async function inpaintImage(imageWithTransparencyBase64Url: string, promp
             },
         });
         
+        if (!response.candidates || response.candidates.length === 0) {
+            throw new Error("No candidates returned from AI");
+        }
+        
+        if (!response.candidates[0]?.content?.parts) {
+            throw new Error("No content parts in response");
+        }
+        
         for (const part of response.candidates[0].content.parts) {
             if (part.inlineData) {
                 return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
@@ -195,6 +318,20 @@ export async function inpaintImage(imageWithTransparencyBase64Url: string, promp
 
     } catch (error) {
         console.error("Error calling Gemini API for inpainting:", error);
-        throw new Error("Failed to edit the image. Please try again.");
+        
+        // Provide more specific error messages
+        if (error instanceof Error) {
+            if (error.message.includes('API_KEY')) {
+                throw new Error("API key not configured. Please set GEMINI_API_KEY in your .env.local file.");
+            }
+            if (error.message.includes('quota') || error.message.includes('rate limit')) {
+                throw new Error("API quota exceeded. Please try again later.");
+            }
+            if (error.message.includes('Invalid')) {
+                throw new Error(error.message);
+            }
+        }
+        
+        throw new Error(`Failed to edit the image: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`);
     }
 }
